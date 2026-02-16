@@ -1,0 +1,371 @@
+// This is your Prisma schema file
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Authentication
+model User {
+  id             String    @id @default(cuid())
+  name           String?
+  email          String    @unique
+  emailVerified  DateTime?
+  image          String?
+  password       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  accounts       Account[]
+  sessions       Session[]
+  memberships    BusinessMember[]
+  transactions   Transaction[]
+  auditLogs      AuditLog[]
+  sentInvites    Invite[]
+
+  @@index([email])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Business/Tenant
+model Business {
+  id                  String   @id @default(cuid())
+  name                String
+  industry            String?
+  currency            String   @default("NGN")
+  fiscalStartMonth    Int      @default(1) // 1-12
+  enableApprovals     Boolean  @default(false)
+  budgetAlertThreshold Int     @default(80) // percentage
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  members        BusinessMember[]
+  bankAccounts   BankAccount[]
+  categories     Category[]
+  transactions   Transaction[]
+  budgets        Budget[]
+  invites        Invite[]
+  attachments    Attachment[]
+  auditLogs      AuditLog[]
+  subscription   Subscription?
+
+  @@index([name])
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  STAFF
+  VIEWER
+}
+
+model BusinessMember {
+  id         String   @id @default(cuid())
+  userId     String
+  businessId String
+  role       Role     @default(STAFF)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, businessId])
+  @@index([businessId])
+  @@index([userId])
+}
+
+// Bank Accounts
+model BankAccount {
+  id              String   @id @default(cuid())
+  businessId      String
+  name            String
+  type            String   @default("bank") // cash, bank
+  openingBalance  Float    @default(0)
+  currentBalance  Float    @default(0)
+  isDefault       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([businessId])
+}
+
+// Categories
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+model Category {
+  id           String       @id @default(cuid())
+  businessId   String
+  name         String
+  type         CategoryType
+  icon         String?
+  color        String?
+  isDefault    Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  business          Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  transactions      Transaction[]
+  transactionSplits TransactionSplit[]
+  budgets           Budget[]
+
+  @@unique([businessId, name, type])
+  @@index([businessId])
+  @@index([type])
+}
+
+// Transactions
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  POS
+  CHEQUE
+  MOBILE_MONEY
+  OTHER
+}
+
+enum TransactionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Transaction {
+  id            String            @id @default(cuid())
+  businessId    String
+  accountId     String
+  categoryId    String?
+  userId        String            // who created it
+  type          TransactionType
+  amount        Float
+  date          DateTime
+  paymentMethod PaymentMethod     @default(CASH)
+  vendorName    String?
+  customerName  String?
+  description   String?
+  tags          String[]
+  status        TransactionStatus @default(APPROVED)
+  isRecurring   Boolean           @default(false)
+  recurringRule String?           // JSON: {frequency: 'monthly', dayOfMonth: 1, endDate: null}
+  parentId      String?           // for recurring instances
+  isCleared     Boolean           @default(false) // for reconciliation
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  // For transfers
+  toAccountId   String?
+
+  business    Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  account     BankAccount        @relation(fields: [accountId], references: [id])
+  category    Category?          @relation(fields: [categoryId], references: [id])
+  user        User               @relation(fields: [userId], references: [id])
+  parent      Transaction?       @relation("RecurringTransactions", fields: [parentId], references: [id])
+  children    Transaction[]      @relation("RecurringTransactions")
+  splits      TransactionSplit[]
+  attachments Attachment[]
+
+  @@index([businessId])
+  @@index([accountId])
+  @@index([categoryId])
+  @@index([date])
+  @@index([type])
+  @@index([status])
+}
+
+model TransactionSplit {
+  id            String   @id @default(cuid())
+  transactionId String
+  categoryId    String
+  amount        Float
+  description   String?
+  createdAt     DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  category    Category    @relation(fields: [categoryId], references: [id])
+
+  @@index([transactionId])
+}
+
+// Budgets
+model Budget {
+  id           String   @id @default(cuid())
+  businessId   String
+  categoryId   String?  // null means overall budget
+  amount       Float
+  month        Int      // 1-12
+  year         Int
+  carryOver    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  business Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@unique([businessId, categoryId, month, year])
+  @@index([businessId])
+  @@index([month, year])
+}
+
+// Invitations
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELLED
+}
+
+model Invite {
+  id         String       @id @default(cuid())
+  businessId String
+  email      String
+  role       Role
+  token      String       @unique
+  status     InviteStatus @default(PENDING)
+  expiresAt  DateTime
+  invitedBy  String
+  createdAt  DateTime     @default(now())
+
+  business  Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  inviter   User     @relation(fields: [invitedBy], references: [id])
+
+  @@index([businessId])
+  @@index([email])
+  @@index([token])
+}
+
+// Attachments
+model Attachment {
+  id            String   @id @default(cuid())
+  businessId    String
+  transactionId String?
+  fileName      String
+  fileType      String
+  fileSize      Int
+  url           String
+  uploadedAt    DateTime @default(now())
+
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([businessId])
+  @@index([transactionId])
+}
+
+// Subscriptions
+enum SubscriptionPlan {
+  FREE
+  PRO
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+  TRIALING
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  businessId           String             @unique
+  plan                 SubscriptionPlan   @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  stripePriceId        String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+}
+
+// Audit Log
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  REJECT
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  businessId  String
+  userId      String
+  action      AuditAction
+  entityType  String      // 'transaction', 'budget', 'category', etc.
+  entityId    String
+  oldData     Json?
+  newData     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([businessId])
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
