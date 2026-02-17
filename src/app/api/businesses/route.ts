@@ -1,11 +1,34 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import prisma from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
 import { createBusinessSchema } from '@/lib/validations';
+import { checkPlanLimits, PlanType } from '@/lib/stripe';
+
+// Default categories for new businesses
+const DEFAULT_CATEGORIES = [
+  // Expense categories
+  { name: 'Inventory/Stock', type: 'EXPENSE', color: '#ef4444' },
+  { name: 'Rent', type: 'EXPENSE', color: '#f97316' },
+  { name: 'Utilities', type: 'EXPENSE', color: '#eab308' },
+  { name: 'Salaries', type: 'EXPENSE', color: '#22c55e' },
+  { name: 'Transportation', type: 'EXPENSE', color: '#14b8a6' },
+  { name: 'Marketing', type: 'EXPENSE', color: '#3b82f6' },
+  { name: 'Equipment', type: 'EXPENSE', color: '#8b5cf6' },
+  { name: 'Supplies', type: 'EXPENSE', color: '#ec4899' },
+  { name: 'Insurance', type: 'EXPENSE', color: '#6366f1' },
+  { name: 'Taxes & Fees', type: 'EXPENSE', color: '#71717a' },
+  { name: 'Miscellaneous', type: 'EXPENSE', color: '#a3a3a3' },
+  // Income categories
+  { name: 'Sales', type: 'INCOME', color: '#22c55e' },
+  { name: 'Services', type: 'INCOME', color: '#14b8a6' },
+  { name: 'Interest', type: 'INCOME', color: '#3b82f6' },
+  { name: 'Refunds', type: 'INCOME', color: '#8b5cf6' },
+  { name: 'Other Income', type: 'INCOME', color: '#6366f1' },
+];
 
 // Get user's businesses
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -18,32 +41,28 @@ export async function GET() {
         business: {
           include: {
             subscription: true,
+            _count: {
+              select: { members: true, transactions: true },
+            },
           },
         },
       },
     });
 
     const businesses = memberships.map((m) => ({
-      id: m.business.id,
-      name: m.business.name,
-      industry: m.business.industry,
-      currency: m.business.currency,
+      ...m.business,
       role: m.role,
-      plan: m.business.subscription?.plan || 'FREE',
     }));
 
     return NextResponse.json({ businesses });
   } catch (error) {
     console.error('Get businesses error:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch businesses' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to fetch businesses' }, { status: 500 });
   }
 }
 
-// Create a new business
-export async function POST(request: Request) {
+// Create new business
+export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -60,107 +79,81 @@ export async function POST(request: Request) {
       );
     }
 
-    const {
-      name,
-      industry,
-      currency,
-      fiscalStartMonth,
-      openingCashBalance,
-      openingBankBalance,
-    } = validatedData.data;
-
-    // Check plan limits
+    // Check how many businesses user already owns
     const existingBusinesses = await prisma.businessMember.count({
       where: { userId: session.user.id, role: 'OWNER' },
     });
 
-    // For simplicity, allow up to 3 businesses on free plan
-    if (existingBusinesses >= 3) {
-      return NextResponse.json(
-        { error: 'You have reached the maximum number of businesses' },
-        { status: 400 }
-      );
+    // For now, use FREE plan limits for new businesses
+    const limits = checkPlanLimits('FREE' as PlanType, { businesses: existingBusinesses });
+
+    if (!limits.allowed) {
+      return NextResponse.json({ error: limits.reason }, { status: 403 });
     }
 
-    // Create business with default data
+    const { name, industry, currency, fiscalStartMonth, openingCashBalance, openingBankBalance } =
+      validatedData.data;
+
+    // Create business with default accounts, categories, and subscription
     const business = await prisma.business.create({
       data: {
         name,
         industry,
         currency,
-        fiscalStartMonth,
-        members: {
-          create: {
-            userId: session.user.id,
-            role: 'OWNER',
-          },
-        },
+        fiscalStartMonth: fiscalStartMonth || 1,
+        // Create subscription
         subscription: {
           create: {
             plan: 'FREE',
             status: 'ACTIVE',
           },
         },
+        // Add owner membership
+        members: {
+          create: {
+            userId: session.user.id,
+            role: 'OWNER',
+          },
+        },
+        // Create default bank accounts
         bankAccounts: {
           create: [
             {
               name: 'Cash',
-              type: 'cash',
-              openingBalance: openingCashBalance,
-              currentBalance: openingCashBalance,
-              isDefault: true,
+              type: 'CASH',
+              currency,
+              openingBalance: openingCashBalance || 0,
+              currentBalance: openingCashBalance || 0,
             },
             {
-              name: 'Bank',
-              type: 'bank',
-              openingBalance: openingBankBalance,
-              currentBalance: openingBankBalance,
-              isDefault: false,
+              name: 'Bank Account',
+              type: 'BANK',
+              currency,
+              openingBalance: openingBankBalance || 0,
+              currentBalance: openingBankBalance || 0,
             },
           ],
         },
+        // Create default categories
         categories: {
-          create: [
-            // Expense categories
-            { name: 'Rent', type: 'EXPENSE', icon: 'Home', color: '#EF4444', isDefault: true },
-            { name: 'Salaries', type: 'EXPENSE', icon: 'Users', color: '#F97316', isDefault: true },
-            { name: 'Transport', type: 'EXPENSE', icon: 'Car', color: '#F59E0B', isDefault: true },
-            { name: 'Data/Internet', type: 'EXPENSE', icon: 'Wifi', color: '#EAB308', isDefault: true },
-            { name: 'Marketing', type: 'EXPENSE', icon: 'Megaphone', color: '#84CC16', isDefault: true },
-            { name: 'Utilities', type: 'EXPENSE', icon: 'Zap', color: '#22C55E', isDefault: true },
-            { name: 'Inventory', type: 'EXPENSE', icon: 'Package', color: '#14B8A6', isDefault: true },
-            { name: 'Maintenance', type: 'EXPENSE', icon: 'Wrench', color: '#06B6D4', isDefault: true },
-            { name: 'Taxes', type: 'EXPENSE', icon: 'Receipt', color: '#0EA5E9', isDefault: true },
-            { name: 'Feeding', type: 'EXPENSE', icon: 'UtensilsCrossed', color: '#3B82F6', isDefault: true },
-            { name: 'Miscellaneous', type: 'EXPENSE', icon: 'MoreHorizontal', color: '#6366F1', isDefault: true },
-            // Income categories
-            { name: 'Sales', type: 'INCOME', icon: 'ShoppingCart', color: '#22C55E', isDefault: true },
-            { name: 'Services', type: 'INCOME', icon: 'Briefcase', color: '#10B981', isDefault: true },
-            { name: 'Grants', type: 'INCOME', icon: 'Gift', color: '#14B8A6', isDefault: true },
-            { name: 'Investments', type: 'INCOME', icon: 'TrendingUp', color: '#06B6D4', isDefault: true },
-            { name: 'Other Income', type: 'INCOME', icon: 'Plus', color: '#0EA5E9', isDefault: true },
-          ],
+          create: DEFAULT_CATEGORIES.map((cat) => ({
+            name: cat.name,
+            type: cat.type,
+            color: cat.color,
+            isDefault: true,
+          })),
         },
       },
       include: {
         subscription: true,
+        bankAccounts: true,
+        categories: true,
       },
     });
 
-    return NextResponse.json({
-      message: 'Business created successfully',
-      business: {
-        id: business.id,
-        name: business.name,
-        currency: business.currency,
-        plan: business.subscription?.plan || 'FREE',
-      },
-    });
+    return NextResponse.json({ business }, { status: 201 });
   } catch (error) {
     console.error('Create business error:', error);
-    return NextResponse.json(
-      { error: 'Failed to create business' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to create business' }, { status: 500 });
   }
 }
