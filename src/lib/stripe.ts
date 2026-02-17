@@ -1,141 +1,114 @@
 import Stripe from 'stripe';
-import prisma from './prisma';
-import { SubscriptionPlan, SubscriptionStatus } from '@prisma/client';
 
 export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2024-12-18.acacia',
+  apiVersion: '2025-01-27.acacia',
 });
 
 export const PLANS = {
   FREE: {
     name: 'Free',
+    price: 0,
+    maxTransactions: 100,
     maxBusinesses: 1,
     maxUsers: 1,
-    maxTransactionsPerMonth: 100,
-    features: ['Basic reports', 'CSV export', '1 business', '1 user'],
-    monthlyPrice: 0,
-    yearlyPrice: 0,
+    features: ['Basic dashboard', 'Up to 100 transactions/month', 'Basic reports'],
   },
   PRO: {
     name: 'Pro',
+    priceMonthly: 15,
+    priceYearly: 150,
+    maxTransactions: -1, // unlimited
     maxBusinesses: 1,
     maxUsers: 5,
-    maxTransactionsPerMonth: -1,
     features: [
       'Unlimited transactions',
-      'All reports',
+      'Advanced reports',
       'Receipt uploads',
-      '1 business',
-      'Up to 5 users',
-      'Email support',
+      'CSV export',
+      'Up to 5 team members',
+      'Recurring transactions',
     ],
-    monthlyPrice: 15,
-    yearlyPrice: 150,
     stripePriceIdMonthly: process.env.STRIPE_PRO_MONTHLY_PRICE_ID,
     stripePriceIdYearly: process.env.STRIPE_PRO_YEARLY_PRICE_ID,
   },
   BUSINESS: {
     name: 'Business',
+    priceMonthly: 30,
+    priceYearly: 300,
+    maxTransactions: -1,
     maxBusinesses: 3,
     maxUsers: 15,
-    maxTransactionsPerMonth: -1,
     features: [
       'Everything in Pro',
       'Up to 3 businesses',
-      'Up to 15 users',
-      'Approvals workflow',
-      'Recurring transactions',
-      'Advanced exports',
+      'Up to 15 team members',
+      'Approval workflows',
       'Priority support',
+      'Custom categories',
     ],
-    monthlyPrice: 30,
-    yearlyPrice: 300,
     stripePriceIdMonthly: process.env.STRIPE_BUSINESS_MONTHLY_PRICE_ID,
     stripePriceIdYearly: process.env.STRIPE_BUSINESS_YEARLY_PRICE_ID,
   },
-} as const;
+};
 
 export type PlanType = keyof typeof PLANS;
 
-export function canAccessFeature(plan: SubscriptionPlan, feature: string): boolean {
-  const featureMap: Record<string, SubscriptionPlan[]> = {
-    'receipt-uploads': ['PRO', 'BUSINESS'],
-    'approvals': ['BUSINESS'],
-    'recurring': ['PRO', 'BUSINESS'],
-    'advanced-exports': ['BUSINESS'],
-    'invite-users': ['PRO', 'BUSINESS'],
-    'pdf-reports': ['PRO', 'BUSINESS'],
+export function canAccessFeature(
+  plan: PlanType,
+  feature: 'receipts' | 'recurring' | 'approvals' | 'export' | 'advancedReports'
+): boolean {
+  const featureAccess: Record<string, PlanType[]> = {
+    receipts: ['PRO', 'BUSINESS'],
+    recurring: ['PRO', 'BUSINESS'],
+    approvals: ['BUSINESS'],
+    export: ['PRO', 'BUSINESS'],
+    advancedReports: ['PRO', 'BUSINESS'],
   };
-  const allowedPlans = featureMap[feature];
-  if (!allowedPlans) return true;
-  return allowedPlans.includes(plan);
+
+  return featureAccess[feature]?.includes(plan) ?? false;
 }
 
-export async function checkPlanLimits(businessId: string, plan: SubscriptionPlan) {
+export function checkPlanLimits(
+  plan: PlanType,
+  current: { transactions?: number; businesses?: number; users?: number }
+): { allowed: boolean; reason?: string } {
   const planConfig = PLANS[plan];
-  const startOfMonth = new Date();
-  startOfMonth.setDate(1);
-  startOfMonth.setHours(0, 0, 0, 0);
 
-  const currentTransactions = await prisma.transaction.count({
-    where: { businessId, createdAt: { gte: startOfMonth } },
-  });
+  if (
+    planConfig.maxTransactions !== -1 &&
+    current.transactions &&
+    current.transactions >= planConfig.maxTransactions
+  ) {
+    return {
+      allowed: false,
+      reason: `You've reached the ${planConfig.maxTransactions} transaction limit for the ${planConfig.name} plan`,
+    };
+  }
 
-  const currentUsers = await prisma.businessMember.count({
-    where: { businessId },
-  });
+  if (current.businesses && current.businesses >= planConfig.maxBusinesses) {
+    return {
+      allowed: false,
+      reason: `You can only have ${planConfig.maxBusinesses} business(es) on the ${planConfig.name} plan`,
+    };
+  }
 
-  const transactionLimit = planConfig.maxTransactionsPerMonth;
-  const userLimit = planConfig.maxUsers;
+  if (current.users && current.users >= planConfig.maxUsers) {
+    return {
+      allowed: false,
+      reason: `You can only have ${planConfig.maxUsers} team member(s) on the ${planConfig.name} plan`,
+    };
+  }
 
-  return {
-    canAddTransaction: transactionLimit === -1 || currentTransactions < transactionLimit,
-    canAddUser: currentUsers < userLimit,
-    canAddBusiness: true,
-    currentTransactions,
-    currentUsers,
-    transactionLimit: transactionLimit === -1 ? Infinity : transactionLimit,
-    userLimit,
-  };
+  return { allowed: true };
 }
 
 export async function createCheckoutSession(
+  customerId: string,
+  priceId: string,
   businessId: string,
-  plan: 'PRO' | 'BUSINESS',
-  interval: 'month' | 'year',
   successUrl: string,
   cancelUrl: string
-): Promise<string> {
-  const subscription = await prisma.subscription.findUnique({
-    where: { businessId },
-    include: { business: true },
-  });
-  if (!subscription) throw new Error('Subscription not found');
-
-  const owner = await prisma.businessMember.findFirst({
-    where: { businessId, role: 'OWNER' },
-    include: { user: true },
-  });
-  if (!owner) throw new Error('Business owner not found');
-
-  const planConfig = PLANS[plan];
-  const priceId = interval === 'month' ? planConfig.stripePriceIdMonthly : planConfig.stripePriceIdYearly;
-  if (!priceId) throw new Error('Price ID not configured');
-
-  let customerId = subscription.stripeCustomerId;
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      email: owner.user.email,
-      name: owner.user.name || undefined,
-      metadata: { businessId, businessName: subscription.business.name },
-    });
-    customerId = customer.id;
-    await prisma.subscription.update({
-      where: { businessId },
-      data: { stripeCustomerId: customerId },
-    });
-  }
-
+) {
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
     mode: 'subscription',
@@ -143,83 +116,105 @@ export async function createCheckoutSession(
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
-    metadata: { businessId, plan },
+    metadata: { businessId },
   });
-  return session.url!;
+
+  return session;
 }
 
-export async function createBillingPortalSession(businessId: string, returnUrl: string): Promise<string> {
-  const subscription = await prisma.subscription.findUnique({ where: { businessId } });
-  if (!subscription?.stripeCustomerId) throw new Error('No Stripe customer found');
+export async function createBillingPortalSession(
+  customerId: string,
+  returnUrl: string
+) {
   const session = await stripe.billingPortal.sessions.create({
-    customer: subscription.stripeCustomerId,
+    customer: customerId,
     return_url: returnUrl,
   });
-  return session.url;
+
+  return session;
 }
 
-function mapStripeStatus(status: Stripe.Subscription.Status): SubscriptionStatus {
-  const statusMap: Record<string, SubscriptionStatus> = {
-    active: 'ACTIVE',
-    canceled: 'CANCELLED',
-    past_due: 'PAST_DUE',
-    trialing: 'TRIALING',
-    incomplete: 'PAST_DUE',
-    incomplete_expired: 'CANCELLED',
-    unpaid: 'PAST_DUE',
-    paused: 'CANCELLED',
-  };
-  return statusMap[status] || 'ACTIVE';
-}
-
-export async function handleStripeWebhook(event: Stripe.Event): Promise<void> {
+export async function handleStripeWebhook(
+  event: Stripe.Event,
+  prisma: any
+) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
       const businessId = session.metadata?.businessId;
-      const plan = session.metadata?.plan as 'PRO' | 'BUSINESS';
-      if (businessId && plan && session.subscription) {
-        const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription as string);
+      const subscriptionId = session.subscription as string;
+
+      if (businessId && subscriptionId) {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const priceId = subscription.items.data[0]?.price.id;
+
+        let plan: PlanType = 'FREE';
+        if (priceId === PLANS.PRO.stripePriceIdMonthly || priceId === PLANS.PRO.stripePriceIdYearly) {
+          plan = 'PRO';
+        } else if (priceId === PLANS.BUSINESS.stripePriceIdMonthly || priceId === PLANS.BUSINESS.stripePriceIdYearly) {
+          plan = 'BUSINESS';
+        }
+
         await prisma.subscription.update({
           where: { businessId },
           data: {
-            plan: plan,
+            stripeSubscriptionId: subscriptionId,
+            stripePriceId: priceId,
+            plan,
             status: 'ACTIVE',
-            stripeSubscriptionId: stripeSubscription.id,
-            stripePriceId: stripeSubscription.items.data[0]?.price.id,
-            currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-            currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
+            currentPeriodStart: new Date(subscription.current_period_start * 1000),
+            currentPeriodEnd: new Date(subscription.current_period_end * 1000),
           },
         });
       }
       break;
     }
+
     case 'customer.subscription.updated': {
       const subscription = event.data.object as Stripe.Subscription;
+      const priceId = subscription.items.data[0]?.price.id;
+
+      let plan: PlanType = 'FREE';
+      if (priceId === PLANS.PRO.stripePriceIdMonthly || priceId === PLANS.PRO.stripePriceIdYearly) {
+        plan = 'PRO';
+      } else if (priceId === PLANS.BUSINESS.stripePriceIdMonthly || priceId === PLANS.BUSINESS.stripePriceIdYearly) {
+        plan = 'BUSINESS';
+      }
+
       await prisma.subscription.updateMany({
         where: { stripeSubscriptionId: subscription.id },
         data: {
-          status: mapStripeStatus(subscription.status),
+          plan,
+          status: subscription.status === 'active' ? 'ACTIVE' : 'PAST_DUE',
           currentPeriodStart: new Date(subscription.current_period_start * 1000),
           currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
         },
       });
       break;
     }
+
     case 'customer.subscription.deleted': {
       const subscription = event.data.object as Stripe.Subscription;
+
       await prisma.subscription.updateMany({
         where: { stripeSubscriptionId: subscription.id },
-        data: { plan: 'FREE', status: 'CANCELLED', stripeSubscriptionId: null, stripePriceId: null },
+        data: {
+          plan: 'FREE',
+          status: 'CANCELED',
+          stripeSubscriptionId: null,
+          stripePriceId: null,
+        },
       });
       break;
     }
+
     case 'invoice.payment_failed': {
       const invoice = event.data.object as Stripe.Invoice;
-      if (invoice.subscription) {
+      const subscriptionId = invoice.subscription as string;
+
+      if (subscriptionId) {
         await prisma.subscription.updateMany({
-          where: { stripeSubscriptionId: invoice.subscription as string },
+          where: { stripeSubscriptionId: subscriptionId },
           data: { status: 'PAST_DUE' },
         });
       }
@@ -228,18 +223,6 @@ export async function handleStripeWebhook(event: Stripe.Event): Promise<void> {
   }
 }
 
-export async function cancelSubscription(businessId: string): Promise<void> {
-  const subscription = await prisma.subscription.findUnique({ where: { businessId } });
-  if (subscription?.stripeSubscriptionId) {
-    await stripe.subscriptions.update(subscription.stripeSubscriptionId, { cancel_at_period_end: true });
-    await prisma.subscription.update({ where: { businessId }, data: { cancelAtPeriodEnd: true } });
-  }
-}
-
-export async function resumeSubscription(businessId: string): Promise<void> {
-  const subscription = await prisma.subscription.findUnique({ where: { businessId } });
-  if (subscription?.stripeSubscriptionId) {
-    await stripe.subscriptions.update(subscription.stripeSubscriptionId, { cancel_at_period_end: false });
-    await prisma.subscription.update({ where: { businessId }, data: { cancelAtPeriodEnd: false } });
-  }
+export async function cancelSubscription(subscriptionId: string) {
+  return stripe.subscriptions.cancel(subscriptionId);
 }
