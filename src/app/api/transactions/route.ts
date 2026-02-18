@@ -5,7 +5,6 @@ import { authOptions } from '@/lib/auth';
 import { transactionSchema } from '@/lib/validations';
 import { checkPlanLimits, PlanType } from '@/lib/stripe';
 
-// Get transactions
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -17,11 +16,6 @@ export async function GET(request: NextRequest) {
     const businessId = searchParams.get('businessId');
     const type = searchParams.get('type');
     const categoryId = searchParams.get('categoryId');
-    const accountId = searchParams.get('accountId');
-    const status = searchParams.get('status');
-    const startDate = searchParams.get('startDate');
-    const endDate = searchParams.get('endDate');
-    const search = searchParams.get('search');
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '20');
 
@@ -29,7 +23,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
     }
 
-    // Verify user has access to this business
     const membership = await prisma.businessMember.findFirst({
       where: { userId: session.user.id, businessId },
     });
@@ -38,43 +31,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    // Build where clause
     const where: any = { businessId };
+    if (type && type !== 'all') where.type = type;
+    if (categoryId) where.categoryId = categoryId;
 
-    if (type && type !== 'all') {
-      where.type = type;
-    }
-
-    if (categoryId) {
-      where.categoryId = categoryId;
-    }
-
-    if (accountId) {
-      where.accountId = accountId;
-    }
-
-    if (status) {
-      where.status = status;
-    }
-
-    if (startDate || endDate) {
-      where.date = {};
-      if (startDate) where.date.gte = new Date(startDate);
-      if (endDate) where.date.lte = new Date(endDate);
-    }
-
-    if (search) {
-      where.OR = [
-        { description: { contains: search, mode: 'insensitive' } },
-        { vendor: { contains: search, mode: 'insensitive' } },
-        { reference: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
-    // Get total count
     const total = await prisma.transaction.count({ where });
 
-    // Get transactions
     const transactions = await prisma.transaction.findMany({
       where,
       include: {
@@ -89,12 +51,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       transactions,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (error) {
     console.error('Get transactions error:', error);
@@ -102,7 +59,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Create transaction
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -122,7 +78,6 @@ export async function POST(request: NextRequest) {
 
     const { businessId, ...transactionData } = validatedData.data;
 
-    // Verify user has access to this business
     const membership = await prisma.businessMember.findFirst({
       where: { userId: session.user.id, businessId },
     });
@@ -131,7 +86,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    // Check if user can create transactions (not VIEWER)
     if (membership.role === 'VIEWER') {
       return NextResponse.json(
         { error: 'Viewers cannot create transactions' },
@@ -139,23 +93,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check plan limits
     const subscription = await prisma.subscription.findUnique({ 
       where: { businessId } 
     });
     
     const plan = (subscription?.plan || 'FREE') as PlanType;
     
-    // Count transactions this month
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
     
     const transactionCount = await prisma.transaction.count({
-      where: {
-        businessId,
-        createdAt: { gte: startOfMonth },
-      },
+      where: { businessId, createdAt: { gte: startOfMonth } },
     });
 
     const limits = checkPlanLimits(plan, { transactions: transactionCount });
@@ -164,19 +113,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: limits.reason }, { status: 403 });
     }
 
-    // Get business settings for approval workflow
     const business = await prisma.business.findUnique({
       where: { id: businessId },
       select: { enableApprovals: true },
     });
 
-    // Determine transaction status
     let status = 'APPROVED';
     if (business?.enableApprovals && membership.role === 'STAFF') {
       status = 'PENDING';
     }
 
-    // Create the transaction
     const transaction = await prisma.transaction.create({
       data: {
         ...transactionData,
@@ -190,7 +136,6 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Update account balance if approved
     if (status === 'APPROVED' && transactionData.accountId) {
       const balanceChange =
         transactionData.type === 'INCOME'
@@ -203,7 +148,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Create audit log
     await prisma.auditLog.create({
       data: {
         businessId,
