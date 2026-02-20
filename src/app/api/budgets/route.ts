@@ -36,27 +36,8 @@ export async function GET(request: NextRequest) {
     const budgetsWithSpending = await Promise.all(
       budgets.map(async (budget) => {
         const now = new Date();
-        let startOfPeriod: Date;
-        let endOfPeriod: Date;
-
-        switch (budget.period) {
-          case 'MONTHLY':
-            startOfPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
-            endOfPeriod = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-            break;
-          case 'QUARTERLY':
-            const quarter = Math.floor(now.getMonth() / 3);
-            startOfPeriod = new Date(now.getFullYear(), quarter * 3, 1);
-            endOfPeriod = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
-            break;
-          case 'YEARLY':
-            startOfPeriod = new Date(now.getFullYear(), 0, 1);
-            endOfPeriod = new Date(now.getFullYear(), 11, 31);
-            break;
-          default:
-            startOfPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
-            endOfPeriod = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-        }
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
         const spent = await prisma.transaction.aggregate({
           where: {
@@ -65,8 +46,8 @@ export async function GET(request: NextRequest) {
             type: 'EXPENSE',
             status: 'APPROVED',
             date: {
-              gte: startOfPeriod,
-              lte: endOfPeriod,
+              gte: startOfMonth,
+              lte: endOfMonth,
             },
           },
           _sum: { amount: true },
@@ -81,7 +62,7 @@ export async function GET(request: NextRequest) {
           remaining: budget.amount - spentAmount,
           percentage: Math.round(percentage * 100) / 100,
           isOverBudget: spentAmount > budget.amount,
-          isNearLimit: percentage >= budget.alertThreshold,
+          isNearLimit: percentage >= (budget.alertThreshold || 80),
         };
       })
     );
@@ -101,11 +82,11 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { businessId, categoryId, amount, period, alertThreshold } = body;
+    const { businessId, categoryId, amount, alertThreshold } = body;
 
-    if (!businessId || !categoryId || !amount || !period) {
+    if (!businessId || !categoryId || !amount) {
       return NextResponse.json(
-        { error: 'Business ID, category, amount, and period are required' },
+        { error: 'Business ID, category, and amount are required' },
         { status: 400 }
       );
     }
@@ -145,7 +126,6 @@ export async function POST(request: NextRequest) {
         businessId,
         categoryId,
         amount: parseFloat(amount),
-        period,
         alertThreshold: alertThreshold || 80,
         isActive: true,
       },
