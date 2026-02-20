@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const businessId = searchParams.get('businessId');
+    const month = parseInt(searchParams.get('month') || String(new Date().getMonth() + 1));
+    const year = parseInt(searchParams.get('year') || String(new Date().getFullYear()));
 
     if (!businessId) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
@@ -25,49 +27,45 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
+    const business = await prisma.business.findUnique({
+      where: { id: businessId },
+      select: { currency: true },
+    });
+
     const budgets = await prisma.budget.findMany({
-      where: { businessId },
-      include: {
-        category: { select: { id: true, name: true, color: true } },
-      },
+      where: { businessId, month, year },
+      include: { category: true },
       orderBy: { createdAt: 'desc' },
     });
 
-    const budgetsWithSpending = await Promise.all(
-      budgets.map(async (budget) => {
-        const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
 
-        const spent = await prisma.transaction.aggregate({
-          where: {
-            businessId,
-            categoryId: budget.categoryId,
-            type: 'EXPENSE',
-            status: 'APPROVED',
-            date: {
-              gte: startOfMonth,
-              lte: endOfMonth,
-            },
-          },
-          _sum: { amount: true },
-        });
+    const transactions = await prisma.transaction.findMany({
+      where: {
+        businessId,
+        type: 'EXPENSE',
+        status: 'APPROVED',
+        date: { gte: startDate, lte: endDate },
+      },
+    });
 
-        const spentAmount = spent._sum.amount || 0;
-        const percentage = budget.amount > 0 ? (spentAmount / budget.amount) * 100 : 0;
+    const budgetsWithSpending = budgets.map((budget) => {
+      const spent = transactions
+        .filter((t) => t.categoryId === budget.categoryId)
+        .reduce((sum, t) => sum + t.amount, 0);
 
-        return {
-          ...budget,
-          spent: spentAmount,
-          remaining: budget.amount - spentAmount,
-          percentage: Math.round(percentage * 100) / 100,
-          isOverBudget: spentAmount > budget.amount,
-          isNearLimit: percentage >= (budget.alertThreshold || 80),
-        };
-      })
-    );
+      const percentage = budget.amount > 0 ? Math.round((spent / budget.amount) * 100) : 0;
 
-    return NextResponse.json({ budgets: budgetsWithSpending });
+      return {
+        ...budget,
+        spent,
+        remaining: budget.amount - spent,
+        percentage,
+      };
+    });
+
+    return NextResponse.json({ budgets: budgetsWithSpending, currency: business?.currency || 'NGN' });
   } catch (error) {
     console.error('Get budgets error:', error);
     return NextResponse.json({ error: 'Failed to fetch budgets' }, { status: 500 });
@@ -82,11 +80,11 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { businessId, categoryId, amount, alertThreshold } = body;
+    const { businessId, categoryId, amount, month, year, carryOver } = body;
 
-    if (!businessId || !categoryId || !amount) {
+    if (!businessId || amount === undefined || !month || !year) {
       return NextResponse.json(
-        { error: 'Business ID, category, and amount are required' },
+        { error: 'Business ID, amount, month, and year are required' },
         { status: 400 }
       );
     }
@@ -107,31 +105,28 @@ export async function POST(request: NextRequest) {
     }
 
     const existing = await prisma.budget.findFirst({
-      where: {
-        businessId,
-        categoryId,
-        isActive: true,
-      },
+      where: { businessId, categoryId: categoryId || null, month, year },
     });
 
     if (existing) {
-      return NextResponse.json(
-        { error: 'An active budget already exists for this category' },
-        { status: 400 }
-      );
+      const budget = await prisma.budget.update({
+        where: { id: existing.id },
+        data: { amount: parseFloat(amount), carryOver: carryOver || false },
+        include: { category: true },
+      });
+      return NextResponse.json({ budget });
     }
 
     const budget = await prisma.budget.create({
       data: {
         businessId,
-        categoryId,
+        categoryId: categoryId || null,
         amount: parseFloat(amount),
-        alertThreshold: alertThreshold || 80,
-        isActive: true,
+        month,
+        year,
+        carryOver: carryOver || false,
       },
-      include: {
-        category: { select: { id: true, name: true, color: true } },
-      },
+      include: { category: true },
     });
 
     return NextResponse.json({ budget }, { status: 201 });
