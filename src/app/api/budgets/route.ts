@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import prisma from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
-import { createBudgetSchema } from '@/lib/validations';
 
 export async function GET(request: NextRequest) {
   try {
@@ -36,8 +35,28 @@ export async function GET(request: NextRequest) {
 
     const budgetsWithSpending = await Promise.all(
       budgets.map(async (budget) => {
-        const startOfPeriod = new Date(budget.startDate);
-        const endOfPeriod = budget.endDate || new Date();
+        const now = new Date();
+        let startOfPeriod: Date;
+        let endOfPeriod: Date;
+
+        switch (budget.period) {
+          case 'MONTHLY':
+            startOfPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
+            endOfPeriod = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+            break;
+          case 'QUARTERLY':
+            const quarter = Math.floor(now.getMonth() / 3);
+            startOfPeriod = new Date(now.getFullYear(), quarter * 3, 1);
+            endOfPeriod = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
+            break;
+          case 'YEARLY':
+            startOfPeriod = new Date(now.getFullYear(), 0, 1);
+            endOfPeriod = new Date(now.getFullYear(), 11, 31);
+            break;
+          default:
+            startOfPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
+            endOfPeriod = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        }
 
         const spent = await prisma.transaction.aggregate({
           where: {
@@ -82,16 +101,14 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const validatedData = createBudgetSchema.safeParse(body);
+    const { businessId, categoryId, amount, period, alertThreshold } = body;
 
-    if (!validatedData.success) {
+    if (!businessId || !categoryId || !amount || !period) {
       return NextResponse.json(
-        { error: validatedData.error.errors[0].message },
+        { error: 'Business ID, category, amount, and period are required' },
         { status: 400 }
       );
     }
-
-    const { businessId, categoryId, amount, period, startDate, endDate, alertThreshold } = validatedData.data;
 
     const membership = await prisma.businessMember.findFirst({
       where: { userId: session.user.id, businessId },
@@ -127,10 +144,8 @@ export async function POST(request: NextRequest) {
       data: {
         businessId,
         categoryId,
-        amount,
+        amount: parseFloat(amount),
         period,
-        startDate: new Date(startDate),
-        endDate: endDate ? new Date(endDate) : null,
         alertThreshold: alertThreshold || 80,
         isActive: true,
       },
