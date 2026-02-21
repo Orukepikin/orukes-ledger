@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import prisma from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
-import { transactionSchema } from '@/lib/validations';
 import { checkPlanLimits, PlanType } from '@/lib/stripe';
 import { TransactionStatus } from '@prisma/client';
 
@@ -68,16 +67,27 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const validatedData = transactionSchema.safeParse(body);
+    const { 
+      businessId, 
+      type, 
+      amount, 
+      description, 
+      date, 
+      categoryId, 
+      accountId,
+      vendor,
+      reference,
+      notes,
+      isRecurring,
+      recurringFrequency 
+    } = body;
 
-    if (!validatedData.success) {
+    if (!businessId || !type || !amount || !description || !date || !accountId) {
       return NextResponse.json(
-        { error: validatedData.error.errors[0].message },
+        { error: 'Business ID, type, amount, description, date, and account are required' },
         { status: 400 }
       );
     }
-
-    const { businessId, ...transactionData } = validatedData.data;
 
     const membership = await prisma.businessMember.findFirst({
       where: { userId: session.user.id, businessId },
@@ -126,10 +136,17 @@ export async function POST(request: NextRequest) {
 
     const transaction = await prisma.transaction.create({
       data: {
-        ...transactionData,
         businessId,
         userId: session.user.id,
+        accountId,
+        type,
+        amount: parseFloat(amount),
+        description,
+        date: new Date(date),
+        categoryId: categoryId || null,
+        vendorName: vendor || null,
         status,
+        isRecurring: isRecurring || false,
       },
       include: {
         category: { select: { id: true, name: true, color: true } },
@@ -137,14 +154,11 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    if (status === 'APPROVED' && transactionData.accountId) {
-      const balanceChange =
-        transactionData.type === 'INCOME'
-          ? transactionData.amount
-          : -transactionData.amount;
+    if (status === 'APPROVED') {
+      const balanceChange = type === 'INCOME' ? parseFloat(amount) : -parseFloat(amount);
 
       await prisma.bankAccount.update({
-        where: { id: transactionData.accountId },
+        where: { id: accountId },
         data: { currentBalance: { increment: balanceChange } },
       });
     }
