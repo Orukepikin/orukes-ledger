@@ -1,10 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import prisma from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
-import { createCategorySchema } from '@/lib/validations';
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -13,6 +12,7 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const businessId = searchParams.get('businessId');
+    const type = searchParams.get('type');
 
     if (!businessId) {
       return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
@@ -26,9 +26,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
+    const where: any = { businessId };
+    if (type) where.type = type;
+
     const categories = await prisma.category.findMany({
-      where: { businessId },
-      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+      where,
+      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
     });
 
     return NextResponse.json({ categories });
@@ -38,7 +41,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -46,45 +49,51 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { businessId, ...categoryData } = body;
+    const { businessId, name, type, color } = body;
 
-    if (!businessId) {
-      return NextResponse.json({ error: 'Business ID required' }, { status: 400 });
+    if (!businessId || !name || !type) {
+      return NextResponse.json(
+        { error: 'Business ID, name, and type are required' },
+        { status: 400 }
+      );
     }
 
     const membership = await prisma.businessMember.findFirst({
       where: { userId: session.user.id, businessId },
     });
 
-    if (!membership || membership.role === 'VIEWER') {
+    if (!membership) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    const validatedData = createCategorySchema.safeParse(categoryData);
-    if (!validatedData.success) {
-      return NextResponse.json({ error: validatedData.error.errors[0].message }, { status: 400 });
+    if (membership.role === 'VIEWER') {
+      return NextResponse.json(
+        { error: 'Viewers cannot create categories' },
+        { status: 403 }
+      );
     }
 
     const existing = await prisma.category.findFirst({
-      where: {
-        businessId,
-        name: validatedData.data.name,
-        type: validatedData.data.type,
-      },
+      where: { businessId, name, type },
     });
 
     if (existing) {
-      return NextResponse.json({ error: 'Category already exists' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'A category with this name already exists' },
+        { status: 400 }
+      );
     }
 
     const category = await prisma.category.create({
       data: {
         businessId,
-        ...validatedData.data,
+        name,
+        type,
+        color: color || null,
       },
     });
 
-    return NextResponse.json({ category });
+    return NextResponse.json({ category }, { status: 201 });
   } catch (error) {
     console.error('Create category error:', error);
     return NextResponse.json({ error: 'Failed to create category' }, { status: 500 });
