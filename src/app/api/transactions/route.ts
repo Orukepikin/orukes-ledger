@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
 import { transactionSchema } from '@/lib/validations';
 import { checkPlanLimits, PlanType } from '@/lib/stripe';
+import { TransactionStatus } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
   try {
@@ -93,16 +94,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const subscription = await prisma.subscription.findUnique({ 
-      where: { businessId } 
+    const subscription = await prisma.subscription.findUnique({
+      where: { businessId },
     });
-    
+
     const plan = (subscription?.plan || 'FREE') as PlanType;
-    
+
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
-    
+
     const transactionCount = await prisma.transaction.count({
       where: { businessId, createdAt: { gte: startOfMonth } },
     });
@@ -118,7 +119,7 @@ export async function POST(request: NextRequest) {
       select: { enableApprovals: true },
     });
 
-    let status = 'APPROVED';
+    let status: TransactionStatus = 'APPROVED';
     if (business?.enableApprovals && membership.role === 'STAFF') {
       status = 'PENDING';
     }
