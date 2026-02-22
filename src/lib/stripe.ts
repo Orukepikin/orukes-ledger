@@ -25,9 +25,9 @@ export const PLANS = {
   },
   PRO: {
     name: 'Pro',
-    price: 15,
-    monthlyPrice: 15,
-    yearlyPrice: 150,
+    price: 5000,
+    monthlyPrice: 5000,
+    yearlyPrice: 50000,
     maxTransactions: -1,
     maxBusinesses: 1,
     maxUsers: 5,
@@ -44,9 +44,9 @@ export const PLANS = {
   },
   BUSINESS: {
     name: 'Business',
-    price: 30,
-    monthlyPrice: 30,
-    yearlyPrice: 300,
+    price: 15000,
+    monthlyPrice: 15000,
+    yearlyPrice: 150000,
     maxTransactions: -1,
     maxBusinesses: 3,
     maxUsers: 15,
@@ -105,6 +105,15 @@ export function checkPlanLimits(plan: PlanType, current: PlanLimitsInput): PlanL
   }
 
   return { allowed: true };
+}
+
+export function formatNaira(amount: number): string {
+  return new Intl.NumberFormat('en-NG', {
+    style: 'currency',
+    currency: 'NGN',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount);
 }
 
 export async function createCheckoutSession(
