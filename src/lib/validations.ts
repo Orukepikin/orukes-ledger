@@ -11,6 +11,10 @@ export const signupSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
+  confirmPassword: z.string().min(6, 'Please confirm your password'),
+}).refine((data) => data.password === data.confirmPassword, {
+  message: "Passwords don't match",
+  path: ['confirmPassword'],
 });
 
 export const signUpSchema = signupSchema;
@@ -39,7 +43,7 @@ export const transactionSchema = z.object({
   description: z.string().min(1, 'Description is required'),
   date: z.string().or(z.date()).transform((val) => new Date(val)),
   categoryId: z.string().optional(),
-  accountId: z.string().optional(),
+  accountId: z.string().min(1, 'Account is required'),
   vendor: z.string().optional(),
   reference: z.string().optional(),
   notes: z.string().optional(),
@@ -99,20 +103,18 @@ export const updateAccountSchema = z.object({
 
 export const budgetSchema = z.object({
   businessId: z.string().min(1, 'Business ID is required'),
-  categoryId: z.string().min(1, 'Category is required'),
+  categoryId: z.string().optional(),
   amount: z.number().positive('Budget amount must be positive'),
-  period: z.enum(['MONTHLY', 'QUARTERLY', 'YEARLY']),
-  startDate: z.string().or(z.date()).transform((val) => new Date(val)),
-  endDate: z.string().or(z.date()).transform((val) => new Date(val)).optional(),
-  alertThreshold: z.number().min(0).max(100).default(80),
+  month: z.number().min(1).max(12),
+  year: z.number().min(2020).max(2100),
+  carryOver: z.boolean().optional(),
 });
 
 export const createBudgetSchema = budgetSchema;
 
 export const updateBudgetSchema = z.object({
   amount: z.number().positive().optional(),
-  alertThreshold: z.number().min(0).max(100).optional(),
-  isActive: z.boolean().optional(),
+  carryOver: z.boolean().optional(),
 });
 
 export const inviteMemberSchema = z.object({
