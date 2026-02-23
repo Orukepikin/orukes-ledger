@@ -72,7 +72,7 @@ const pricingPlans = [
   },
   {
     name: 'Pro',
-    price: '$15',
+    price: '₦5,000',
     period: '/month',
     description: 'For growing businesses',
     features: [
@@ -88,7 +88,7 @@ const pricingPlans = [
   },
   {
     name: 'Business',
-    price: '$30',
+    price: '₦15,000',
     period: '/month',
     description: 'For multiple businesses',
     features: [
