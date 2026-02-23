@@ -1,12 +1,10 @@
 import { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
-import { PrismaAdapter } from '@auth/prisma-adapter';
 import bcrypt from 'bcryptjs';
 import prisma from './prisma';
 
 export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma) as any,
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || '',
@@ -24,7 +22,7 @@ export const authOptions: NextAuthOptions = {
         }
 
         const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
+          where: { email: credentials.email.toLowerCase() },
         });
 
         if (!user || !user.password) {
@@ -68,19 +66,25 @@ export const authOptions: NextAuthOptions = {
     },
     async signIn({ user, account, profile }) {
       if (account?.provider === 'google') {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: user.email! },
-        });
-
-        if (!existingUser) {
-          await prisma.user.create({
-            data: {
-              email: user.email!,
-              name: user.name,
-              image: user.image,
-              emailVerified: new Date(),
-            },
+        try {
+          const existingUser = await prisma.user.findUnique({
+            where: { email: user.email! },
           });
+
+          if (!existingUser) {
+            // Create new user for Google sign in
+            await prisma.user.create({
+              data: {
+                email: user.email!,
+                name: user.name,
+                image: user.image,
+                emailVerified: new Date(),
+              },
+            });
+          }
+        } catch (error) {
+          console.error('Error in signIn callback:', error);
+          return false;
         }
       }
       return true;
