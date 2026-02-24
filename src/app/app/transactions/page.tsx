@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { Suspense, useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowDownRight,
@@ -78,7 +78,7 @@ interface Account {
   currentBalance: number;
 }
 
-export default function TransactionsPage() {
+function TransactionsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -90,10 +90,10 @@ export default function TransactionsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 0 });
   
-  // Filters
+  // Filters - use "all" instead of empty string
   const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<string>('');
-  const [categoryFilter, setCategoryFilter] = useState<string>('');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [showFilters, setShowFilters] = useState(false);
   
   // Add Transaction Modal
@@ -126,8 +126,9 @@ export default function TransactionsPage() {
       });
 
       if (searchQuery) params.set('search', searchQuery);
-      if (typeFilter) params.set('type', typeFilter);
-      if (categoryFilter) params.set('categoryId', categoryFilter);
+      // Only add filter if not "all"
+      if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
+      if (categoryFilter && categoryFilter !== 'all') params.set('categoryId', categoryFilter);
 
       const response = await fetch(`/api/transactions?${params}`);
       if (response.ok) {
@@ -228,7 +229,7 @@ export default function TransactionsPage() {
       toast({
         title: 'Transaction added',
         description: 'Your transaction has been recorded successfully.',
-        variant: 'success',
+        variant: 'default',
       });
 
       setShowAddModal(false);
@@ -311,7 +312,7 @@ export default function TransactionsPage() {
                   <SelectValue placeholder="All Types" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Types</SelectItem>
+                  <SelectItem value="all">All Types</SelectItem>
                   <SelectItem value="INCOME">Income</SelectItem>
                   <SelectItem value="EXPENSE">Expense</SelectItem>
                   <SelectItem value="TRANSFER">Transfer</SelectItem>
@@ -322,7 +323,7 @@ export default function TransactionsPage() {
                   <SelectValue placeholder="All Categories" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Categories</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
                   {categories.map((cat) => (
                     <SelectItem key={cat.id} value={cat.id}>
                       {cat.name}
@@ -376,7 +377,7 @@ export default function TransactionsPage() {
                           {tx.category?.name || (tx.type === 'TRANSFER' ? 'Transfer' : 'Uncategorized')}
                         </p>
                         {tx.status === 'PENDING' && (
-                          <Badge variant="warning">Pending</Badge>
+                          <Badge variant="secondary">Pending</Badge>
                         )}
                       </div>
                       <p className="text-sm text-gray-500">
@@ -493,17 +494,18 @@ export default function TransactionsPage() {
               />
             </div>
 
-            {transactionType !== 'TRANSFER' && (
+            {transactionType !== 'TRANSFER' && filteredCategories.length > 0 && (
               <div>
                 <Label htmlFor="category">Category</Label>
                 <Select
-                  value={formData.categoryId}
-                  onValueChange={(v) => setFormData({ ...formData, categoryId: v })}
+                  value={formData.categoryId || 'none'}
+                  onValueChange={(v) => setFormData({ ...formData, categoryId: v === 'none' ? '' : v })}
                 >
                   <SelectTrigger className="mt-1">
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="none">Select category</SelectItem>
                     {filteredCategories.map((cat) => (
                       <SelectItem key={cat.id} value={cat.id}>
                         {cat.name}
@@ -514,38 +516,42 @@ export default function TransactionsPage() {
               </div>
             )}
 
-            <div>
-              <Label htmlFor="account">
-                {transactionType === 'TRANSFER' ? 'From Account' : 'Account'}
-              </Label>
-              <Select
-                value={formData.accountId}
-                onValueChange={(v) => setFormData({ ...formData, accountId: v })}
-              >
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {accounts.map((acc) => (
-                    <SelectItem key={acc.id} value={acc.id}>
-                      {acc.name} ({formatCurrency(acc.currentBalance, currency)})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {transactionType === 'TRANSFER' && (
+            {accounts.length > 0 && (
               <div>
-                <Label htmlFor="toAccount">To Account</Label>
+                <Label htmlFor="account">
+                  {transactionType === 'TRANSFER' ? 'From Account' : 'Account'}
+                </Label>
                 <Select
-                  value={formData.toAccountId}
-                  onValueChange={(v) => setFormData({ ...formData, toAccountId: v })}
+                  value={formData.accountId || 'none'}
+                  onValueChange={(v) => setFormData({ ...formData, accountId: v === 'none' ? '' : v })}
                 >
                   <SelectTrigger className="mt-1">
                     <SelectValue placeholder="Select account" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="none">Select account</SelectItem>
+                    {accounts.map((acc) => (
+                      <SelectItem key={acc.id} value={acc.id}>
+                        {acc.name} ({formatCurrency(acc.currentBalance, currency)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {transactionType === 'TRANSFER' && accounts.length > 1 && (
+              <div>
+                <Label htmlFor="toAccount">To Account</Label>
+                <Select
+                  value={formData.toAccountId || 'none'}
+                  onValueChange={(v) => setFormData({ ...formData, toAccountId: v === 'none' ? '' : v })}
+                >
+                  <SelectTrigger className="mt-1">
+                    <SelectValue placeholder="Select account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Select account</SelectItem>
                     {accounts
                       .filter((acc) => acc.id !== formData.accountId)
                       .map((acc) => (
@@ -648,5 +654,13 @@ function TransactionsSkeleton() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export default function TransactionsPage() {
+  return (
+    <Suspense fallback={<TransactionsSkeleton />}>
+      <TransactionsContent />
+    </Suspense>
   );
 }
